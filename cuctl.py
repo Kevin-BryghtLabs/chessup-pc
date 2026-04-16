@@ -2,16 +2,13 @@
 
 from simplepyble import Adapter, Peripheral
 from datetime import datetime
+import signal
 import time
 import struct
 import png
-
-FileHeaderSize = 5
-PacketHeaderSize = 2
-
-NordicService  = "6e400001-b5a3-f393-e0a9-e50e24dcca9e"
-NordicRXChar   = "6e400002-b5a3-f393-e0a9-e50e24dcca9e"
-NordicTXChar   = "6e400003-b5a3-f393-e0a9-e50e24dcca9e"
+from multiprocessing import Pipe, Process
+from io import BytesIO
+import remote_pdb
 
 class BLEFile:
     def __init__(self):
@@ -20,149 +17,236 @@ class BLEFile:
         self.crc = 0
 
 class ChessupBLE:
+    FileHeaderSize = 5
+    PacketHeaderSize = 2
+    
+    NordicService   = "6e400001-b5a3-f393-e0a9-e50e24dcca9e"
+    NordicRXChar    = "6e400002-b5a3-f393-e0a9-e50e24dcca9e"
+    NordicTXChar    = "6e400003-b5a3-f393-e0a9-e50e24dcca9e"
+
+    BgCmdScan       = "Scan"
+    BgCmdConnect    = "Connect"
+    BgCmdDisconnect = "Disconnect"
+    BgCmdStop       = "Stop"
+    BgCmdScreenshot = "Screenshot"
+
+    BgEvtBoards     = "Boards"
+    BgEvtConnected  = "Connected"
+    BgEvtScreenshot = "Screenshot"
+    BgEvtProgress   = "Progress"
+
+    CUCmdScreenshot = b'\xCA'
+
     def __init__(self):
-        self.adapters: list[Adapter] = Adapter.get_adapters()
-        self.boards: list[Peripheral] = []
-        self.scanning = False
+        #self.adapters: list[Adapter] = Adapter.get_adapters()
+
+        # Addresses of the found boards
+        self.boardAddresses: list[str] = []
+
         self.connected = False
-        self.selectedAdapter: Adapter | None = None
-        self.selectedBoard: Peripheral | None = None
-        self.fileMap: dict[int, BLEFile] = {}
+        self.selectedAdapter: str | None = None
+        self.selectedBoard: str | None = None
         self.currentFileData = None
         self.images: list[png.Image] = []
 
+        # Background task
+        self.fgPipe, self.bgPipe = Pipe()
+        self.bgProcess = Process(target=self.bgTask)
+
+        self.boardsUpdatedListeners = []
+        self.imageReceivedListeners = []
+        self.connectionStatusListeners = []
+        self.transferProgressListeners = []
+
+        # Start the background task
+        self.bgProcess.start()
+
+    def finish(self):
+        self.fgPipe.send( (ChessupBLE.BgCmdStop, ()) )
+        self.bgProcess.join()
+
+    def registerBoardsUpdatedListener(self, listener):
+        self.boardsUpdatedListeners.append(listener)
+
+    def registerImageReceivedListener(self, listener):
+        self.imageReceivedListeners.append(listener)
+
+    def registerConnectionStatusListener(self, listener):
+        self.connectionStatusListeners.append(listener)
+
+    def registerTransferProgressListener(self, listener):
+        self.transferProgressListeners.append(listener)
+
+    def isConnected(self):
+        return self.connected
+
+    def update(self):
+        try:
+            while self.fgPipe.poll():
+                event, args = self.fgPipe.recv()
+
+                match event:
+                    case ChessupBLE.BgEvtBoards:
+                        print("FG got board event")
+                        (self.boardAddresses,) = args
+                        for l in self.boardsUpdatedListeners:
+                            print("Calling listener")
+                            l(self.getBoards())
+
+                    case ChessupBLE.BgEvtConnected:
+                        isConnected = args[0]
+                        statusMessage = args[1]
+                        self.connected = isConnected
+
+                        for l in self.connectionStatusListeners:
+                            l(isConnected, statusMessage)
+
+                    case ChessupBLE.BgEvtScreenshot:
+                        pngData = args[0]
+
+                        for l in self.imageReceivedListeners:
+                            l(pngData)
+
+                    case ChessupBLE.BgEvtProgress:
+                        progress = args[0]
+
+                        for l in self.transferProgressListeners:
+                            l(progress)
+
+                    case _:
+                        print(f"Error: Unknown background event: {event[0]}")
+
+        except Exception as e:
+            print(f"Error in BLE update: {e}")
+
     def getAdapters(self):
-        return [(a.identifier(), a.address()) for a in self.adapters]
+        return [(a.identifier(), a.address()) for a in Adapter.get_adapters()]
 
     def getBoards(self):
-        return [(b.address()) for b in self.boards]
+        return self.boardAddresses[:]
 
     def selectAdapter(self, address):
-        self.selectedAdapter = None
-        for a in self.adapters:
-            if a.address() == address:
-                self.selectedAdapter = a
-        return self.selectedAdapter is not None
+        self.selectedAdapter = address
+        print(f"Selected adapter {self.selectedAdapter}")
 
     def selectBoard(self, address):
-        self.selectedBoard = None
-        for b in self.boards:
-            if b.address() == address:
-                self.selectedBoard = b
-        return self.selectedBoard is not None
+        self.selectedBoard = address if address in self.boardAddresses else None
+        print(f"Selected board {self.selectedBoard}")
 
     def scanBoards(self, scanTimeMs=5000):
         if self.selectedAdapter is None:
+            print(f"Can't start scan; no adapter selected")
             return
 
-        if self.scanning:
-            return
-
-        self.selectedAdapter.set_callback_on_scan_start(self.onScanStart)
-        self.selectedAdapter.set_callback_on_scan_stop(self.onScanEnd)
-        self.selectedAdapter.set_callback_on_scan_found(self.onPeripheralFound)
-
-        self.selectedAdapter.scan_for(scanTimeMs)
-
-    def onScanStart(self):
-        self.scanning = True
-
-    def onScanEnd(self):
-        self.scanning = False
-
-    def onPeripheralFound(self, p: Peripheral):
-        print(f"Found peripheral {p.identifier()} [{p.address()}]")
-        if p.identifier() == "ChessUp":
-            self.boards.append(p)
+        self.fgPipe.send( (ChessupBLE.BgCmdScan, (self.selectedAdapter, scanTimeMs,)) )
 
     def connect(self):
-        if self.selectedBoard is None:
-            return False
+        self.fgPipe.send( (ChessupBLE.BgCmdConnect, (self.selectedBoard,)) )
+
+    def bgConnect(self, boardAddress):
+        board = next((b for b in self.bgBoards if b.address() == boardAddress), None)
+        if board is None:
+            print(f"Can't connect: unknown peripheral {boardAddress}")
+            return
 
         try:
-            self.selectedBoard.connect()
-            self.connected = True
-            self.selectedBoard.notify(NordicService, NordicTXChar, self.onReceiveBLE);
+            board.connect()
+            self.bgPipe.send( (ChessupBLE.BgEvtConnected, (True, "Connected")) )
+            self.bgConnectedBoard = board
+
+            board.notify(ChessupBLE.NordicService, ChessupBLE.NordicTXChar, self.bgOnReceiveBLE);
 
         except Exception:
+            self.bgPipe.send( (ChessupBLE.BgEvtConnected, (False, "Connection Error")) )
             return False
 
     def disconnect(self):
-        if self.selectedBoard is None:
-            return
-        if not self.connected:
+        self.fgPipe.send( (ChessupBLE.BgCmdDisconnect, ()) )
+
+    def bgDisconnect(self):
+        if self.bgConnectedBoard is None:
             return
 
         try:
-            self.selectedBoard.disconnect()
+            self.bgConnectedBoard.disconnect()
+            self.bgConnectedBoard = None
             self.connected = False
+            self.bgPipe.send( (ChessupBLE.BgEvtConnected, (False, "Not connected")) )
         except Exception:
+            self.bgPipe.send( (ChessupBLE.BgEvtConnected, (False, "Error disconnecting")) )
             pass
 
-    def sendBLE(self, data):
-        if self.selectedBoard is None:
+    def bgSendBLE(self, data):
+        if self.bgConnectedBoard is None:
             return False
         try:
-            self.selectedBoard.write_request(NordicService, NordicRXChar, data);
+            self.bgConnectedBoard.write_request(ChessupBLE.NordicService, ChessupBLE.NordicRXChar, data);
             return True
         except Exception:
             return False
 
-    def onReceiveBLE(self, data):
-        print(f"Received BLE data type {data[0]:02x}")
+    def bgOnReceiveBLE(self, data):
         match data[0]:
             case 0xB2:
                 print("Got board info")
-                self.requestScreenshot()
 
             case 0xf4:
-                self.onReceiveFileData(data)
+                self.bgOnReceiveFileData(data)
             case _:
                 pass
 
     def requestScreenshot(self):
-        self.sendBLE(b'\xCA')
+        self.fgPipe.send( (ChessupBLE.BgCmdScreenshot, ()) )
 
-    def onReceiveFileData(self, data):
-        if len(data) < PacketHeaderSize:
+    def bgStartScreenshot(self):
+        self.bgSendBLE(ChessupBLE.CUCmdScreenshot)
+
+    def bgOnReceiveFileData(self, data):
+        if len(data) < ChessupBLE.PacketHeaderSize:
             print("Error: File packet too small")
             return
 
+        expectedFileSize = 360 * 240 * 2
+
         fileId = data[1]
 
-        if fileId not in self.fileMap:
-            if len(data) < FileHeaderSize:
+        if fileId not in self.bgFileMap:
+            if len(data) < ChessupBLE.FileHeaderSize:
                 print("Error: Initial file packet too small")
                 return
 
-            self.fileMap[fileId] = BLEFile()
-            self.fileMap[fileId].type = data[2]
-            (self.fileMap[fileId].crc,) = struct.unpack("<h", data[2:4])
-            self.fileMap[fileId].data = data[FileHeaderSize:]
+            self.bgFileMap[fileId] = BLEFile()
+            self.bgFileMap[fileId].type = data[2]
+            (self.bgFileMap[fileId].crc,) = struct.unpack("<h", data[2:4])
+            self.bgFileMap[fileId].data = data[ChessupBLE.FileHeaderSize:]
 
-        elif len(data) > PacketHeaderSize:
-            self.fileMap[fileId].data += data[PacketHeaderSize:]
+        elif len(data) > ChessupBLE.PacketHeaderSize:
+            self.bgFileMap[fileId].data += data[ChessupBLE.PacketHeaderSize:]
+            received = len(self.bgFileMap[fileId].data)
+            progress = min(received / expectedFileSize, 1.0)
+            self.bgPipe.send( (ChessupBLE.BgEvtProgress, (progress,)) )
 
         else:
-            bleFile = self.fileMap.pop(fileId)
-            self.handleBLEFile(bleFile)
+            self.bgPipe.send( (ChessupBLE.BgEvtProgress, (1.0,)) )
+            bleFile = self.bgFileMap.pop(fileId)
+            self.bgHandleBLEFile(bleFile)
 
-    def handleBLEFile(self, file: BLEFile):
+    def bgHandleBLEFile(self, file: BLEFile):
         (imageType,) = struct.unpack('<h', file.data[0:2])
         match imageType:
             case 0:
-                self.handleRaw565(file.data[2:])
+                self.bgHandleRaw565(file.data[2:])
             case _:
                 print("Error: Unknown image type")
 
-    def conv565(self, data):
+    def bgConv565(self, data):
         (rgb565val,) = struct.unpack(">h", data)
         red   = ((rgb565val & 0xF800) >> 11) << 3
         green = ((rgb565val & 0x07E0) >>  5) << 2
         blue  = ((rgb565val & 0x001F) >>  0) << 3
         return (red, green, blue)
 
-    def handleRaw565(self, data):
+    def bgHandleRaw565(self, data):
         height, width, bpp = struct.unpack('<hhh', data[0:6])
         if bpp != 16:
             print("Error: 565 data must have 16 bits per pixel")
@@ -181,57 +265,138 @@ class ChessupBLE:
         for _ in range(height):
             thisRow = []
             for _ in range(width):
-                thisRow += self.conv565(colorData[idx:idx+2])
+                thisRow += self.bgConv565(colorData[idx:idx+2])
                 idx += 2;
             imageData.append(thisRow)
 
-        self.images.append( png.from_array(imageData, "RGB"))
-        #image.save("CUScreenshot-" + timestamp() + '.png')
+        #remote_pdb.set_trace(port=4444)
+
+        writer = png.Writer(width, height, bitdepth=8, greyscale=False);
+        buf = BytesIO()
+        writer.write(buf, imageData)
+
+        self.bgPipe.send( (ChessupBLE.BgEvtScreenshot, (buf.getvalue(),)) )
+        buf.close()
+        #self.images.append( png.from_array(imageData, "RGB"))
 
     def getImages(self):
         return self.images
 
-cu = ChessupBLE()
+    def bgTask(self):
+        # Ignore SIGINT; main thread will handle it
+        signal.signal(signal.SIGINT, signal.SIG_IGN)
 
-adapters = cu.getAdapters()
-if len(adapters) == 0:
-    exit(0)
+        # Initialization
+        self.bgScanning = False
+        self.bgConnectedBoard: Peripheral | None = None
+        self.bgFileMap: dict[int, BLEFile] = {}
+        self.bgBoards: list[Peripheral] = []
 
-cu.selectAdapter(adapters[0][1])
+        running = True
+        while running:
+            if self.bgPipe.poll(timeout=1.0):
+                cmd, args = self.bgPipe.recv()
+                print(f"BG cmd: {cmd}")
+                print(f"BG args: {args}")
 
-print("Chose {}".format(adapters[0][1]))
+                match cmd:
+                    case ChessupBLE.BgCmdScan:
+                        self.bgScanBoards(*args)
 
-print("Scanning...")
-cu.scanBoards()
+                    case ChessupBLE.BgCmdConnect:
+                        self.bgConnect(*args)
 
-boards = cu.getBoards()
-if len(boards) == 0:
-    exit(0)
+                    case ChessupBLE.BgCmdDisconnect:
+                        self.bgDisconnect(*args)
 
-device: Peripheral | None = None
+                    case ChessupBLE.BgCmdStop:
+                        running = False
 
-for b in boards:
-    if b == 'E4:B0:63:BE:75:42':
-        cu.selectBoard(b)
+                    case ChessupBLE.BgCmdScreenshot:
+                        self.bgStartScreenshot(*args)
+                        
+                    case _:
+                        print(f"Error: Unknown BG command: {cmd}")
 
-if cu.selectedBoard is None:
-    print("Target device not found")
-    exit(0)
+        self.bgDisconnect()
 
-cu.connect()
+    def bgScanBoards(self, adapterAddr, scanTimeMs):
+        if self.bgScanning:
+            print(f"Already scanning")
+            return
 
-for n in range(20):
-    if len(cu.getImages()) > 0:
-        break;
-    time.sleep(1)
+        adapters = [a for a in Adapter.get_adapters() if a.address() == adapterAddr]
+        if len(adapters) == 0:
+            print(f"Unknown adapter {adapterAddr}")
+            return
 
-else:
-    print("No image captured")
+        self.adapter = adapters[0]
 
-def timestamp():
-    return datetime.now().strftime("%Y%m%d-%H%M%S")
+        self.adapter.set_callback_on_scan_start(self.bgOnScanStart)
+        self.adapter.set_callback_on_scan_stop(self.bgOnScanEnd)
+        self.adapter.set_callback_on_scan_found(self.bgOnPeripheralFound)
 
-if (len(cu.images) > 0):
-    cu.images[0].save("CUScreenshot-" + timestamp())
+        print(f"Starting scan")
+        self.adapter.scan_for(scanTimeMs)
 
-cu.disconnect()
+    def bgOnScanStart(self):
+        print(f"Scan started")
+        self.bgScanning = True
+        self.bgBoards = []
+
+    def bgOnPeripheralFound(self, p: Peripheral):
+        print(f"Found peripheral {p.identifier()} [{p.address()}]")
+        if p.identifier() == "ChessUp":
+            self.bgBoards.append(p)
+
+    def bgOnScanEnd(self):
+        print(f"Scan finished")
+        self.bgScanning = False
+        boardAddresses = [b.address() for b in self.bgBoards]
+        self.bgPipe.send( (ChessupBLE.BgEvtBoards, (boardAddresses,)) )
+
+if __name__ == '__main__':
+    cu = ChessupBLE()
+
+    adapters = cu.getAdapters()
+    if len(adapters) == 0:
+        exit(0)
+
+    cu.selectAdapter(adapters[0][1])
+
+    print("Chose {}".format(adapters[0][1]))
+
+    print("Scanning...")
+    cu.scanBoards()
+
+    boards = cu.getBoards()
+    if len(boards) == 0:
+        exit(0)
+
+    device: Peripheral | None = None
+
+    for b in boards:
+        if b == 'E4:B0:63:BE:75:42':
+            cu.selectBoard(b)
+
+    if cu.selectedBoard is None:
+        print("Target device not found")
+        exit(0)
+
+    cu.connect()
+
+    for n in range(20):
+        if len(cu.getImages()) > 0:
+            break;
+        time.sleep(1)
+
+    else:
+        print("No image captured")
+
+    def timestamp():
+        return datetime.now().strftime("%Y%m%d-%H%M%S")
+
+    if (len(cu.images) > 0):
+        cu.images[0].save("CUScreenshot-" + timestamp() + '.png')
+
+    cu.disconnect()
