@@ -1,14 +1,12 @@
 #!/usr/bin/env python
 
-from simplepyble import Adapter, Peripheral
-from datetime import datetime
-import signal
-import time
-import struct
 import png
-from multiprocessing import Pipe, Process
+import signal
+import struct
+
 from io import BytesIO
-import remote_pdb
+from multiprocessing import Pipe, Process
+from simplepyble import Adapter, Peripheral
 
 class BLEFile:
     def __init__(self):
@@ -38,8 +36,6 @@ class ChessupBLE:
     CUCmdScreenshot = b'\xCA'
 
     def __init__(self):
-        #self.adapters: list[Adapter] = Adapter.get_adapters()
-
         # Addresses of the found boards
         self.boardAddresses: list[str] = []
 
@@ -87,10 +83,8 @@ class ChessupBLE:
 
                 match event:
                     case ChessupBLE.BgEvtBoards:
-                        print("FG got board event")
                         (self.boardAddresses,) = args
                         for l in self.boardsUpdatedListeners:
-                            print("Calling listener")
                             l(self.getBoards())
 
                     case ChessupBLE.BgEvtConnected:
@@ -269,15 +263,12 @@ class ChessupBLE:
                 idx += 2;
             imageData.append(thisRow)
 
-        #remote_pdb.set_trace(port=4444)
-
         writer = png.Writer(width, height, bitdepth=8, greyscale=False);
         buf = BytesIO()
         writer.write(buf, imageData)
 
         self.bgPipe.send( (ChessupBLE.BgEvtScreenshot, (buf.getvalue(),)) )
         buf.close()
-        #self.images.append( png.from_array(imageData, "RGB"))
 
     def getImages(self):
         return self.images
@@ -296,8 +287,6 @@ class ChessupBLE:
         while running:
             if self.bgPipe.poll(timeout=1.0):
                 cmd, args = self.bgPipe.recv()
-                print(f"BG cmd: {cmd}")
-                print(f"BG args: {args}")
 
                 match cmd:
                     case ChessupBLE.BgCmdScan:
@@ -336,7 +325,6 @@ class ChessupBLE:
         self.adapter.set_callback_on_scan_stop(self.bgOnScanEnd)
         self.adapter.set_callback_on_scan_found(self.bgOnPeripheralFound)
 
-        print(f"Starting scan")
         self.adapter.scan_for(scanTimeMs)
 
     def bgOnScanStart(self):
@@ -354,49 +342,3 @@ class ChessupBLE:
         self.bgScanning = False
         boardAddresses = [b.address() for b in self.bgBoards]
         self.bgPipe.send( (ChessupBLE.BgEvtBoards, (boardAddresses,)) )
-
-if __name__ == '__main__':
-    cu = ChessupBLE()
-
-    adapters = cu.getAdapters()
-    if len(adapters) == 0:
-        exit(0)
-
-    cu.selectAdapter(adapters[0][1])
-
-    print("Chose {}".format(adapters[0][1]))
-
-    print("Scanning...")
-    cu.scanBoards()
-
-    boards = cu.getBoards()
-    if len(boards) == 0:
-        exit(0)
-
-    device: Peripheral | None = None
-
-    for b in boards:
-        if b == 'E4:B0:63:BE:75:42':
-            cu.selectBoard(b)
-
-    if cu.selectedBoard is None:
-        print("Target device not found")
-        exit(0)
-
-    cu.connect()
-
-    for n in range(20):
-        if len(cu.getImages()) > 0:
-            break;
-        time.sleep(1)
-
-    else:
-        print("No image captured")
-
-    def timestamp():
-        return datetime.now().strftime("%Y%m%d-%H%M%S")
-
-    if (len(cu.images) > 0):
-        cu.images[0].save("CUScreenshot-" + timestamp() + '.png')
-
-    cu.disconnect()

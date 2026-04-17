@@ -1,12 +1,16 @@
 #!/usr/bin/env python
 
 import gi
+import os
 import sys
-gi.require_version("Gtk", "3.0")
-from gi.repository import Gtk, GLib, GdkPixbuf
-from cuctl import ChessupBLE
 import signal
+
+# Must come before the `from gi.repository` imports
+gi.require_version("Gtk", "3.0")
+
+from ChessupBLE import ChessupBLE
 from datetime import datetime
+from gi.repository import Gtk, GLib, GdkPixbuf
 
 def timestamp():
     return datetime.now().strftime("%Y%m%d-%H%M%S")
@@ -16,13 +20,9 @@ class ChessupUI():
         self.application = Gtk.Application()
         self.application.connect("activate", self.onActivate)
 
-        #self.captureButton = self.builder.get_object("CaptureButton")
-        #self.scanButton = self.builder.get_object("ScanButton")
-
         self.adapterMap = {}
         self.boardMap = {}
 
-        self.haveScreenshot = False
         self.pngData: bytes | None = None
 
         self.ble = ChessupBLE()
@@ -31,9 +31,11 @@ class ChessupUI():
         self.ble.registerTransferProgressListener(self.onBLETransferProgress)
         self.ble.registerImageReceivedListener(self.onBLEImageReceived)
 
+        self.saveDirectory = os.getcwd()
+
     def onActivate(self, application):
         self.builder = Gtk.Builder()
-        self.builder.add_from_file("cucll.ui")
+        self.builder.add_from_file("ChessupRemote.glade")
 
         self.window = self.builder.get_object("ChessupApplication")
         self.adapterComboBox: Gtk.ComboBoxText = self.builder.get_object("AdapterComboBox")
@@ -41,11 +43,11 @@ class ChessupUI():
         self.connectionStatusLabel: Gtk.Label = self.builder.get_object("ConnectionStatusLabel")
         self.screenshotImage: Gtk.Image = self.builder.get_object("ScreenshotImage")
         self.transferProgress: Gtk.ProgressBar = self.builder.get_object("TransferProgress")
-        self.connectButton: Gtk.ProgressBar = self.builder.get_object("ConnectButton")
-        self.disconnectButton: Gtk.ProgressBar = self.builder.get_object("DisconnectButton")
-        self.captureButton: Gtk.ProgressBar = self.builder.get_object("CaptureButton")
-        self.saveButton: Gtk.ProgressBar = self.builder.get_object("SaveButton")
-        self.autosaveCheckButton: Gtk.ProgressBar = self.builder.get_object("AutosaveCheckButton")
+        self.connectButton: Gtk.Button = self.builder.get_object("ConnectButton")
+        self.disconnectButton: Gtk.Button = self.builder.get_object("DisconnectButton")
+        self.captureButton: Gtk.Button = self.builder.get_object("CaptureButton")
+        self.saveButton: Gtk.Button = self.builder.get_object("SaveButton")
+        self.autosaveCheckButton: Gtk.CheckButton = self.builder.get_object("AutosaveCheckButton")
 
         self.builder.connect_signals(self)
 
@@ -79,7 +81,6 @@ class ChessupUI():
 
 
     def onBLEBoardsUpdated(self, boards):
-        print("Boards Updated Signal")
         # On a re-scan; store the previous selection so we can keep it selected
         activeItem = self.boardComboBox.get_active_text()
         newActiveIndex = -1
@@ -109,10 +110,10 @@ class ChessupUI():
         self.disconnectButton.set_sensitive(isConnected)
         self.captureButton.set_sensitive(isConnected)
         self.saveButton.set_sensitive(self.haveScreenshot)
+        self.adapterComboBox.set_sensitive(not isConnected)
         self.boardComboBox.set_sensitive(not isConnected)
 
     def onBLEConnectionStatus(self, isConnected, statusMessage):
-        self.isConnected = isConnected
         self.connectionStatusLabel.set_text(statusMessage)
         self.setButtonsState()
 
@@ -120,6 +121,7 @@ class ChessupUI():
         self.transferProgress.set_fraction(progress)
 
     def saveImage(self, filename=None):
+        print(f"Filename: {filename}")
         if self.pngData is None:
             return
 
@@ -150,17 +152,33 @@ class ChessupUI():
         self.ble.scanBoards()
 
     def onSaveButtonClicked(self, widget):
-        self.saveImage()
+        saveDialog = Gtk.FileChooserDialog(
+                title="Save Screenshot",
+                parent=self.window,
+                action=Gtk.FileChooserAction.SAVE,
+                buttons=(Gtk.STOCK_CANCEL, Gtk.ResponseType.CANCEL,
+                         Gtk.STOCK_SAVE, Gtk.ResponseType.OK)
+            )
+        saveDialog.set_current_folder(self.saveDirectory)
+
+        response = saveDialog.run()
+        if response == Gtk.ResponseType.OK:
+            filename = saveDialog.get_filename()
+            # If the user selected a new directory, remember it
+            self.saveDirectory = os.path.dirname(filename)
+            if len(filename) < 4 or filename[-4:].lower() != ".png":
+                filename += ".png"
+            self.saveImage(filename)
+
+        saveDialog.destroy()
 
     def onAdapterComboBoxChanged(self, widget):
         label = widget.get_active_text()
-        print(f"Adapter: {label}")
         if label in self.adapterMap:
             self.ble.selectAdapter(self.adapterMap[label])
 
     def onBoardComboBoxChanged(self, widget):
         label = widget.get_active_text()
-        print(f"Board: {label}")
         if label in self.boardMap:
             self.ble.selectBoard(self.boardMap[label])
             self.setButtonsState()
