@@ -1,0 +1,11 @@
+altgraph==0.17.5
+packaging==26.1
+pycairo==1.29.0
+PyGObject==3.50.0
+PyGObject-stubs==2.1.0
+pyinstaller==6.19.0
+pyinstaller-hooks-contrib==2026.4
+pypng==0.20220715.0
+remote-pdb==2.1.0
+setuptools==82.0.1
+simplepyble==0.12.1

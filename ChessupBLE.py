@@ -150,8 +150,8 @@ class ChessupBLE:
 
             board.notify(ChessupBLE.NordicService, ChessupBLE.NordicTXChar, self.bgOnReceiveBLE);
 
-        except Exception:
-            self.bgPipe.send( (ChessupBLE.BgEvtConnected, (False, "Connection Error")) )
+        except Exception as e:
+            self.bgPipe.send( (ChessupBLE.BgEvtConnected, (False, f"Connection Error: {e}")) )
             return False
 
     def disconnect(self):

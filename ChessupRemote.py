@@ -33,9 +33,19 @@ class ChessupUI():
 
         self.saveDirectory = os.getcwd()
 
+    def getResourceFile(self, relativeFile):
+        try:
+            # This is set by PyInstaller when deployed
+            basePath = sys._MEIPASS
+        except AttributeError:
+            # Use this directory for development
+            basePath = os.path.abspath(".")
+
+        return os.path.join(basePath, relativeFile)
+
     def onActivate(self, application):
         self.builder = Gtk.Builder()
-        self.builder.add_from_file("ChessupRemote.glade")
+        self.builder.add_from_file(self.getResourceFile("ChessupRemote.glade"))
 
         self.window = self.builder.get_object("ChessupApplication")
         self.adapterComboBox: Gtk.ComboBoxText = self.builder.get_object("AdapterComboBox")
@@ -105,11 +115,12 @@ class ChessupUI():
     def setButtonsState(self):
         isConnected = self.ble.isConnected()
         canConnect = not isConnected and self.boardComboBox.get_active_text() is not None
+        haveScreenshot = self.pngData is not None
 
         self.connectButton.set_sensitive(canConnect)
         self.disconnectButton.set_sensitive(isConnected)
         self.captureButton.set_sensitive(isConnected)
-        self.saveButton.set_sensitive(self.haveScreenshot)
+        self.saveButton.set_sensitive(haveScreenshot)
         self.adapterComboBox.set_sensitive(not isConnected)
         self.boardComboBox.set_sensitive(not isConnected)
 
@@ -121,7 +132,6 @@ class ChessupUI():
         self.transferProgress.set_fraction(progress)
 
     def saveImage(self, filename=None):
-        print(f"Filename: {filename}")
         if self.pngData is None:
             return
 
