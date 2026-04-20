@@ -15,8 +15,9 @@ class BLEFile:
         self.crc = 0
 
 class ChessupBLE:
-    FileHeaderSize = 5
+    FileHeaderSize = 7
     PacketHeaderSize = 2
+    ImageHeaderSize = 8
     
     NordicService   = "6e400001-b5a3-f393-e0a9-e50e24dcca9e"
     NordicRXChar    = "6e400002-b5a3-f393-e0a9-e50e24dcca9e"
@@ -211,7 +212,7 @@ class ChessupBLE:
 
             self.bgFileMap[fileId] = BLEFile()
             self.bgFileMap[fileId].type = data[2]
-            (self.bgFileMap[fileId].crc,) = struct.unpack("<h", data[2:4])
+            (self.bgFileMap[fileId].crc,) = struct.unpack("<I", data[2:6])
             self.bgFileMap[fileId].data = data[ChessupBLE.FileHeaderSize:]
 
         elif len(data) > ChessupBLE.PacketHeaderSize:
@@ -229,9 +230,9 @@ class ChessupBLE:
         (imageType,) = struct.unpack('<h', file.data[0:2])
         match imageType:
             case 0:
-                self.bgHandleRaw565(file.data[2:])
+                self.bgHandleRaw565(file.data[:])
             case _:
-                print("Error: Unknown image type")
+                print(f"Error: Unknown image type {imageType}")
 
     def bgConv565(self, data):
         (rgb565val,) = struct.unpack(">h", data)
@@ -241,13 +242,13 @@ class ChessupBLE:
         return (red, green, blue)
 
     def bgHandleRaw565(self, data):
-        height, width, bpp = struct.unpack('<hhh', data[0:6])
+        format, height, width, bpp = struct.unpack('<hhhh', data[0:ChessupBLE.ImageHeaderSize])
         if bpp != 16:
             print("Error: 565 data must have 16 bits per pixel")
             return
 
         imageSize = height * width * 2
-        colorData = data[6:]
+        colorData = data[ChessupBLE.ImageHeaderSize:]
 
         if len(colorData) < imageSize:
             print("Error: Payload too small for header image size")
