@@ -222,5 +222,6 @@ class ChessupUI():
         except Exception:
             pass
 
-c = ChessupUI()
-c.run(sys.argv)
+if __name__ == "__main__"
+    c = ChessupUI()
+    c.run(sys.argv)

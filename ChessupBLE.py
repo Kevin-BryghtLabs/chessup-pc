@@ -5,7 +5,7 @@ import signal
 import struct
 
 from io import BytesIO
-from multiprocessing import Pipe, Process
+from multiprocessing import Pipe, Process, freeze_support
 from simplepyble import Adapter, Peripheral
 
 class BLEFile:
@@ -46,14 +46,16 @@ class ChessupBLE:
         self.currentFileData = None
         self.images: list[png.Image] = []
 
-        # Background task
-        self.fgPipe, self.bgPipe = Pipe()
-        self.bgProcess = Process(target=self.bgTask)
-
         self.boardsUpdatedListeners = []
         self.imageReceivedListeners = []
         self.connectionStatusListeners = []
         self.transferProgressListeners = []
+
+        freeze_support()
+
+        # Background task
+        self.fgPipe, self.bgPipe = Pipe()
+        self.bgProcess = Process(target=self.bgTask)
 
         # Start the background task
         self.bgProcess.start()
