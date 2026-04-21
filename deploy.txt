@@ -1,0 +1,15 @@
+Download the simplepyble wheel for python version 313:
+
+- Release page:
+https://github.com/simpleble/simpleble/releases/tag/v0.12.1
+- Direct links:
+Win: https://github.com/simpleble/simpleble/releases/download/v0.12.1/simplepyble-0.12.1-cp313-cp313-win_amd64.whl
+Mac: https://github.com/simpleble/simpleble/releases/download/v0.12.1/simplepyble-0.12.1-cp313-cp313-macosx_13_0_x86_64.whl
+
+conda create -c conda-forge -n ChessupRemote313 gtk3 pypng pygobject python=3.13 pyinstaller
+conda activate ChessupRemote313
+pip install <path-to-wheel>
+
+-- test application --
+
+pyinstaller --onefile --add-data="ChessupRemote.glade:." --clean ChessupRemote.py
