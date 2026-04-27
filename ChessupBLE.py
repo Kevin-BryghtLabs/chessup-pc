@@ -48,6 +48,7 @@ class ChessupBLE:
 
         self.connected = False
         self.connecting = False
+        self.disconnecting = False
         self.scanning = False
         self.selectedAdapter: str | None = None
         self.selectedBoard: Board | None = None
@@ -90,6 +91,9 @@ class ChessupBLE:
     def isConnecting(self):
         return self.connecting
 
+    def isDisconnecting(self):
+        return self.disconnecting
+
     def isScanning(self):
         return self.scanning
 
@@ -110,6 +114,7 @@ class ChessupBLE:
                         statusMessage = args[1]
                         self.connected = isConnected
                         self.connecting = False
+                        self.disconnecting = False
 
                         for l in self.connectionStatusListeners:
                             l(isConnected, statusMessage)
@@ -179,7 +184,9 @@ class ChessupBLE:
             return False
 
     def disconnect(self):
-        self.fgPipe.send( (ChessupBLE.BgCmdDisconnect, ()) )
+        if (self.isConnected):
+            self.fgPipe.send( (ChessupBLE.BgCmdDisconnect, ()) )
+            self.disconnecting = True
 
     def bgDisconnect(self):
         if self.bgConnectedBoard is None:
@@ -188,7 +195,6 @@ class ChessupBLE:
         try:
             self.bgConnectedBoard.disconnect()
             self.bgConnectedBoard = None
-            self.connected = False
             self.bgPipe.send( (ChessupBLE.BgEvtConnected, (False, "Not connected")) )
         except Exception:
             self.bgPipe.send( (ChessupBLE.BgEvtConnected, (False, "Error disconnecting")) )

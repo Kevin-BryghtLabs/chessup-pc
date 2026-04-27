@@ -67,6 +67,7 @@ class ChessupUI():
 
         self.normalScanButtonText = self.scanButton.get_label()
         self.normalConnectButtonText = self.connectButton.get_label()
+        self.normalDisconnectButtonText = self.disconnectButton.get_label()
 
         self.builder.connect_signals(self)
 
@@ -103,6 +104,10 @@ class ChessupUI():
         activeItem = self.boardComboBox.get_active_text()
         newActiveIndex = -1
 
+        # If there is only one board found, select it
+        if len(boards) == 1:
+            newActiveIndex = 0
+
         self.boardMap = {}
         self.boardComboBox.remove_all()
 
@@ -113,7 +118,7 @@ class ChessupUI():
 
             label = f"{b.address} (Signal: {b.rssi})"
 
-            if activeItem is not None and label[:addrLen] == activeItem[:addrLen]:
+            if newActiveIndex == -1 and activeItem is not None and label[:addrLen] == activeItem[:addrLen]:
                 newActiveIndex = e
 
             # Map the text in the combo box to the adapter address
@@ -129,9 +134,10 @@ class ChessupUI():
     def setButtonsState(self):
         isConnected = self.ble.isConnected()
         isConnecting = self.ble.isConnecting()
+        isDisconnecting = self.ble.isDisconnecting()
         isScanning = self.ble.isScanning()
 
-        isBusy = isConnecting or isScanning
+        isBusy = isConnecting or isDisconnecting or isScanning
         canConnect = not isBusy and not isConnected and self.boardComboBox.get_active_text() is not None
         haveScreenshot = self.pngData is not None and self.currentPixbuf is not None
 
@@ -146,6 +152,7 @@ class ChessupUI():
 
         self.scanButton.set_label("Scanning..." if isScanning else self.normalScanButtonText)
         self.connectButton.set_label("Connecting..." if isConnecting else self.normalConnectButtonText)
+        self.disconnectButton.set_label("Disconnecting..." if isDisconnecting else self.normalDisconnectButtonText)
         self.autosaveDirectoryLabel.set_label(self.saveDirectory)
 
     def onBLEConnectionStatus(self, isConnected, statusMessage):
@@ -256,7 +263,17 @@ class ChessupUI():
         self.ble.disconnect()
         self.setButtonsState()
 
+    def doManualDisconnectToExit(self):
+        # BLE finish will disconnect, but do it manually here to
+        # update the UI so it indicates we are disconnecting
+        if (self.ble.isConnected()):
+            self.ble.disconnect()
+            self.setButtonsState()
+            while Gtk.events_pending():
+                Gtk.main_iteration()
+
     def onWindowDestroyed(self, widget):
+        self.doManualDisconnectToExit()
         self.ble.finish()
         self.application.quit()
 
@@ -266,6 +283,7 @@ class ChessupUI():
 
     def handleSIGINT(self, signum, frame):
         print("Received SIGINT, shutting down...")
+        self.doManualDisconnectToExit()
         self.ble.finish()
         GLib.idle_add(self.application.quit)
 
