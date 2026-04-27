@@ -1,0 +1,152 @@
+ChessupRemote Deployment / Build Notes
+=====================================
+
+This project was successfully built on macOS (Apple Silicon) using:
+- Miniconda / Conda
+- Python 3.13
+- PyInstaller
+- GTK / PyGObject dependencies from conda-forge
+- simplepyble wheel for Python 3.13
+
+
+Important
+---------
+If `conda` is not available in Terminal, initialize it first.
+
+Example:
+    /opt/miniconda3/bin/conda init zsh
+    source ~/.zshrc
+
+Verify with:
+    conda --version
+
+
+1. Download the simplepyble wheel for Python 3.13
+-------------------------------------------------
+
+Release page:
+https://github.com/simpleble/simpleble/releases/tag/v0.12.1
+
+Direct links:
+Win:
+https://github.com/simpleble/simpleble/releases/download/v0.12.1/simplepyble-0.12.1-cp313-cp313-win_amd64.whl
+
+Mac (Apple Silicon):
+https://github.com/simpleble/simpleble/releases/download/v0.12.1/simplepyble-0.12.1-cp313-cp313-macosx_13_0_arm64.whl
+
+
+2. Create the Conda environment
+-------------------------------
+
+Run this in your normal shell:
+
+    conda create -c conda-forge -n ChessupRemote313 python=3.13 pyinstaller pygobject gtk3 gobject-introspection glib gdk-pixbuf cairo pycairo pypng
+
+Then activate it:
+
+    conda activate ChessupRemote313
+
+
+3. Install the simplepyble wheel
+--------------------------------
+
+Install the downloaded wheel:
+
+    pip install <path-to-wheel>
+
+
+4. Verify the GTK environment before building
+---------------------------------------------
+
+Run this inside the ChessupRemote313 environment:
+
+    python -c "import gi; gi.require_version('Gtk','3.0'); from gi.repository import Gtk, GLib, GdkPixbuf; print('GTK OK')"
+
+Expected result:
+
+    GTK OK
+
+
+5. Clear any conflicting shell variables
+----------------------------------------
+
+Before building, unset these variables so the build uses the Conda environment cleanly:
+
+    unset GI_TYPELIB_PATH
+    unset DYLD_LIBRARY_PATH
+    unset PKG_CONFIG_PATH
+
+
+6. Build the application
+------------------------
+
+From the folder containing:
+- ChessupRemote.py
+- ChessupRemote.glade
+
+run:
+
+    pyinstaller --onefile --add-data="ChessupRemote.glade:." --clean ChessupRemote.py
+
+If the build succeeds, the executable will be created in:
+
+    ./dist/ChessupRemote
+
+
+7. Run the built executable
+---------------------------
+
+Only run this after PyInstaller completes successfully:
+
+    ./dist/ChessupRemote
+
+
+Troubleshooting Notes
+=====================
+
+A. If Terminal says:
+    zsh: command not found: conda
+
+Conda is either not installed or not initialized for zsh.
+If Miniconda is already installed at /opt/miniconda3, run:
+
+    /opt/miniconda3/bin/conda init zsh
+    source ~/.zshrc
+
+Then verify:
+
+    conda --version
+
+
+B. If the GTK verification test fails
+-------------------------------------
+
+Re-check that you created the environment with:
+
+    conda create -c conda-forge -n ChessupRemote313 python=3.13 pyinstaller pygobject gtk3 gobject-introspection glib gdk-pixbuf cairo pycairo pypng
+
+Then reactivate:
+
+    conda activate ChessupRemote313
+
+
+C. If PyInstaller fails with a GTK / GdkPixbuf error
+----------------------------------------------------
+
+Make sure:
+1. You are inside the ChessupRemote313 environment
+2. The GTK verification command prints `GTK OK`
+3. You unset:
+       GI_TYPELIB_PATH
+       DYLD_LIBRARY_PATH
+       PKG_CONFIG_PATH
+
+before running PyInstaller
+
+
+Successful Build Command
+========================
+
+The command that successfully built the project was:
+
+    pyinstaller --onefile --add-data="ChessupRemote.glade:." --clean ChessupRemote.py
