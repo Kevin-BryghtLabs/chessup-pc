@@ -8,9 +8,9 @@ import signal
 # Must come before the `from gi.repository` imports
 gi.require_version("Gtk", "3.0")
 
-from ChessupBLE import ChessupBLE
+from ChessupBLE import ChessupBLE, Board
 from datetime import datetime
-from gi.repository import Gtk, GLib, GdkPixbuf
+from gi.repository import Gtk, Gdk, GLib, GdkPixbuf
 
 def timestamp():
     return datetime.now().strftime("%Y%m%d-%H%M%S")
@@ -32,6 +32,8 @@ class ChessupUI():
         self.ble.registerImageReceivedListener(self.onBLEImageReceived)
 
         self.saveDirectory = os.getcwd()
+
+        self.currentPixbuf: GdkPixbuf | None = None
 
     def getResourceFile(self, relativeFile):
         try:
@@ -57,7 +59,14 @@ class ChessupUI():
         self.disconnectButton: Gtk.Button = self.builder.get_object("DisconnectButton")
         self.captureButton: Gtk.Button = self.builder.get_object("CaptureButton")
         self.saveButton: Gtk.Button = self.builder.get_object("SaveButton")
+        self.copyButton: Gtk.Button = self.builder.get_object("CopyButton")
+        self.scanButton: Gtk.Button = self.builder.get_object("ScanButton")
         self.autosaveCheckButton: Gtk.CheckButton = self.builder.get_object("AutosaveCheckButton")
+        self.autocopyCheckButton: Gtk.CheckButton = self.builder.get_object("AutocopyCheckButton")
+        self.autosaveDirectoryLabel: Gtk.CheckButton = self.builder.get_object("AutosaveDirectoryLabel")
+
+        self.normalScanButtonText = self.scanButton.get_label()
+        self.normalConnectButtonText = self.connectButton.get_label()
 
         self.builder.connect_signals(self)
 
@@ -89,40 +98,55 @@ class ChessupUI():
         if count > 0:
             self.adapterComboBox.set_active(0)
 
-
-    def onBLEBoardsUpdated(self, boards):
+    def onBLEBoardsUpdated(self, boards: list[Board]):
         # On a re-scan; store the previous selection so we can keep it selected
         activeItem = self.boardComboBox.get_active_text()
         newActiveIndex = -1
 
         self.boardMap = {}
         self.boardComboBox.remove_all()
-        for e, b in enumerate(boards):
-            label = b
 
-            if label == activeItem:
+        boards.sort(key=lambda b: b.rssi, reverse=True)
+
+        for e, b in enumerate(boards):
+            addrLen = len(b.address)
+
+            label = f"{b.address} (Signal: {b.rssi})"
+
+            if activeItem is not None and label[:addrLen] == activeItem[:addrLen]:
                 newActiveIndex = e
 
             # Map the text in the combo box to the adapter address
-            #   so we can find it when it is clicked.  (Right now
-            #   they are the same, but allow change in the future)
-            self.boardMap[label] = b
+            #   so we can find it when it is clicked.
+            self.boardMap[label] = b.address
             self.boardComboBox.append_text(label)
 
         if newActiveIndex >= 0:
             self.boardComboBox.set_active(newActiveIndex)
 
+        self.setButtonsState()
+
     def setButtonsState(self):
         isConnected = self.ble.isConnected()
-        canConnect = not isConnected and self.boardComboBox.get_active_text() is not None
-        haveScreenshot = self.pngData is not None
+        isConnecting = self.ble.isConnecting()
+        isScanning = self.ble.isScanning()
+
+        isBusy = isConnecting or isScanning
+        canConnect = not isBusy and not isConnected and self.boardComboBox.get_active_text() is not None
+        haveScreenshot = self.pngData is not None and self.currentPixbuf is not None
 
         self.connectButton.set_sensitive(canConnect)
         self.disconnectButton.set_sensitive(isConnected)
         self.captureButton.set_sensitive(isConnected)
+        self.scanButton.set_sensitive(not isBusy)
         self.saveButton.set_sensitive(haveScreenshot)
-        self.adapterComboBox.set_sensitive(not isConnected)
-        self.boardComboBox.set_sensitive(not isConnected)
+        self.copyButton.set_sensitive(haveScreenshot)
+        self.adapterComboBox.set_sensitive(not isConnected and not isBusy)
+        self.boardComboBox.set_sensitive(not isConnected and not isBusy)
+
+        self.scanButton.set_label("Scanning..." if isScanning else self.normalScanButtonText)
+        self.connectButton.set_label("Connecting..." if isConnecting else self.normalConnectButtonText)
+        self.autosaveDirectoryLabel.set_label(self.saveDirectory)
 
     def onBLEConnectionStatus(self, isConnected, statusMessage):
         self.connectionStatusLabel.set_text(statusMessage)
@@ -137,29 +161,42 @@ class ChessupUI():
 
         if filename is None:
             filename = "CUScreenshot-" + timestamp() + ".png"
+            filename = os.path.join(self.saveDirectory, filename)
 
         with open(filename, "wb") as f:
             f.write(self.pngData)
+
+    def copyImage(self):
+        if self.currentPixbuf is not None:
+            clipboard = Gtk.Clipboard.get(Gdk.SELECTION_CLIPBOARD)
+            clipboard.set_image(self.currentPixbuf)
 
     def onBLEImageReceived(self, pngData):
         self.pngData = pngData
         loader = GdkPixbuf.PixbufLoader.new_with_type("png")
         loader.write(pngData)
         loader.close()
+        self.currentPixbuf = loader.get_pixbuf()
 
-        self.screenshotImage.set_from_pixbuf(loader.get_pixbuf())
+        self.screenshotImage.set_from_pixbuf(self.currentPixbuf)
 
         if self.autosaveCheckButton.get_active():
             self.saveImage()
 
-        self.haveScreenshot = True
+        if self.autocopyCheckButton.get_active():
+            self.copyImage()
+
         self.setButtonsState()
 
     def onCaptureButtonClicked(self, widget):
         self.ble.requestScreenshot()
 
+    def onCopyButtonClicked(self, widget):
+        self.copyImage()
+
     def onScanButtonClicked(self, widget):
         self.ble.scanBoards()
+        self.setButtonsState()
 
     def onSaveButtonClicked(self, widget):
         saveDialog = Gtk.FileChooserDialog(
@@ -182,6 +219,24 @@ class ChessupUI():
 
         saveDialog.destroy()
 
+    def onAutosaveDirectorySelectButtonClicked(self, widget):
+        saveDialog = Gtk.FileChooserDialog(
+                title="Auto-save Directory",
+                parent=self.window,
+                action=Gtk.FileChooserAction.SELECT_FOLDER,
+                buttons=(Gtk.STOCK_CANCEL, Gtk.ResponseType.CANCEL,
+                         Gtk.STOCK_SAVE, Gtk.ResponseType.OK)
+            )
+        saveDialog.set_current_folder(self.saveDirectory)
+
+        response = saveDialog.run()
+        if response == Gtk.ResponseType.OK:
+            saveDirectory = saveDialog.get_filename()
+            self.saveDirectory = saveDirectory
+
+        saveDialog.destroy()
+        self.setButtonsState()
+
     def onAdapterComboBoxChanged(self, widget):
         label = widget.get_active_text()
         if label in self.adapterMap:
@@ -195,9 +250,11 @@ class ChessupUI():
 
     def onConnectButtonClicked(self, widget):
         self.ble.connect()
+        self.setButtonsState()
 
     def onDisconnectButtonClicked(self, widget):
         self.ble.disconnect()
+        self.setButtonsState()
 
     def onWindowDestroyed(self, widget):
         self.ble.finish()
@@ -222,6 +279,6 @@ class ChessupUI():
         except Exception:
             pass
 
-if __name__ == "__main__"
+if __name__ == "__main__":
     c = ChessupUI()
     c.run(sys.argv)

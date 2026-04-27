@@ -3,6 +3,7 @@
 import png
 import signal
 import struct
+import traceback
 
 from io import BytesIO
 from multiprocessing import Pipe, Process, freeze_support
@@ -13,6 +14,11 @@ class BLEFile:
         self.type = None
         self.data: bytes = b''
         self.crc = 0
+
+class Board:
+    def __init__(self, address, rssi):
+        self.address: str = address
+        self.rssi: int = rssi
 
 class ChessupBLE:
     FileHeaderSize = 7
@@ -38,11 +44,13 @@ class ChessupBLE:
 
     def __init__(self):
         # Addresses of the found boards
-        self.boardAddresses: list[str] = []
+        self.discoveredBoards: list[Board] = []
 
         self.connected = False
+        self.connecting = False
+        self.scanning = False
         self.selectedAdapter: str | None = None
-        self.selectedBoard: str | None = None
+        self.selectedBoard: Board | None = None
         self.currentFileData = None
         self.images: list[png.Image] = []
 
@@ -79,6 +87,12 @@ class ChessupBLE:
     def isConnected(self):
         return self.connected
 
+    def isConnecting(self):
+        return self.connecting
+
+    def isScanning(self):
+        return self.scanning
+
     def update(self):
         try:
             while self.fgPipe.poll():
@@ -86,7 +100,8 @@ class ChessupBLE:
 
                 match event:
                     case ChessupBLE.BgEvtBoards:
-                        (self.boardAddresses,) = args
+                        (self.discoveredBoards,) = args
+                        self.scanning = False
                         for l in self.boardsUpdatedListeners:
                             l(self.getBoards())
 
@@ -94,6 +109,7 @@ class ChessupBLE:
                         isConnected = args[0]
                         statusMessage = args[1]
                         self.connected = isConnected
+                        self.connecting = False
 
                         for l in self.connectionStatusListeners:
                             l(isConnected, statusMessage)
@@ -115,20 +131,22 @@ class ChessupBLE:
 
         except Exception as e:
             print(f"Error in BLE update: {e}")
+            traceback.print_exc()
 
     def getAdapters(self):
         return [(a.identifier(), a.address()) for a in Adapter.get_adapters()]
 
     def getBoards(self):
-        return self.boardAddresses[:]
+        return self.discoveredBoards[:]
 
     def selectAdapter(self, address):
         self.selectedAdapter = address
         print(f"Selected adapter {self.selectedAdapter}")
 
     def selectBoard(self, address):
-        self.selectedBoard = address if address in self.boardAddresses else None
-        print(f"Selected board {self.selectedBoard}")
+        self.selectedBoard = next((b for b in self.discoveredBoards if b.address == address), None)
+        if self.selectedBoard is not None:
+            print(f"Selected board {self.selectedBoard.address}")
 
     def scanBoards(self, scanTimeMs=5000):
         if self.selectedAdapter is None:
@@ -136,25 +154,28 @@ class ChessupBLE:
             return
 
         self.fgPipe.send( (ChessupBLE.BgCmdScan, (self.selectedAdapter, scanTimeMs,)) )
+        self.scanning = True
 
     def connect(self):
         self.fgPipe.send( (ChessupBLE.BgCmdConnect, (self.selectedBoard,)) )
+        self.connecting = True
 
-    def bgConnect(self, boardAddress):
-        board = next((b for b in self.bgBoards if b.address() == boardAddress), None)
-        if board is None:
-            print(f"Can't connect: unknown peripheral {boardAddress}")
+    def bgConnect(self, board: Board):
+        targetBoard = next((b for b in self.bgBoards if b.address() == board.address), None)
+        if targetBoard is None:
+            print(f"Can't connect: unknown peripheral {board.address}")
             return
 
         try:
-            board.connect()
+            targetBoard.connect()
             self.bgPipe.send( (ChessupBLE.BgEvtConnected, (True, "Connected")) )
-            self.bgConnectedBoard = board
+            self.bgConnectedBoard = targetBoard
 
-            board.notify(ChessupBLE.NordicService, ChessupBLE.NordicTXChar, self.bgOnReceiveBLE);
+            targetBoard.notify(ChessupBLE.NordicService, ChessupBLE.NordicTXChar, self.bgOnReceiveBLE);
 
         except Exception as e:
             self.bgPipe.send( (ChessupBLE.BgEvtConnected, (False, f"Connection Error: {e}")) )
+            traceback.print_exc()
             return False
 
     def disconnect(self):
@@ -171,6 +192,7 @@ class ChessupBLE:
             self.bgPipe.send( (ChessupBLE.BgEvtConnected, (False, "Not connected")) )
         except Exception:
             self.bgPipe.send( (ChessupBLE.BgEvtConnected, (False, "Error disconnecting")) )
+            traceback.print_exc()
             pass
 
     def bgSendBLE(self, data):
@@ -180,6 +202,7 @@ class ChessupBLE:
             self.bgConnectedBoard.write_request(ChessupBLE.NordicService, ChessupBLE.NordicRXChar, data);
             return True
         except Exception:
+            traceback.print_exc()
             return False
 
     def bgOnReceiveBLE(self, data):
@@ -343,5 +366,5 @@ class ChessupBLE:
     def bgOnScanEnd(self):
         print(f"Scan finished")
         self.bgScanning = False
-        boardAddresses = [b.address() for b in self.bgBoards]
-        self.bgPipe.send( (ChessupBLE.BgEvtBoards, (boardAddresses,)) )
+        discoveredBoards = [Board(b.address(), b.rssi()) for b in self.bgBoards]
+        self.bgPipe.send( (ChessupBLE.BgEvtBoards, (discoveredBoards,)) )
